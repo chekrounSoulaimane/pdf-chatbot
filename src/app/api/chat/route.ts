@@ -34,6 +34,61 @@ export async function POST(request: Request) {
 			{ status: 200 }
 		);
 	}
+	// OpenAI recommends replacing newlines with spaces for best results
+	const sanitizedQuestion = question.trim().replaceAll("\n", " ");
 
-	return Response.json({ error: "Nothing here" }, { status: 200 });
+	try {
+		if (!process.env.PINECONE_INDEX_NAME) {
+			throw new Error("Missing Pinecone index name in .env file");
+		}
+		const index = pinecone.Index(process.env.PINECONE_INDEX_NAME);
+
+		/* create vectorstore*/
+		const vectorstore = await PineconeStore.fromExistingIndex(
+			new OpenAIEmbeddings({}),
+			{
+				pineconeIndex: index,
+				textKey: "text",
+			}
+		);
+
+		//create chain
+		const model = new ChatOpenAI({
+			temperature: 0, // increase temperature to get more creative answers
+			modelName: "gpt-3.5-turbo", //change this to gpt-4 if you have access
+		});
+
+		const chain = ConversationalRetrievalQAChain.fromLLM(
+			model,
+			vectorstore.asRetriever(),
+			{
+				qaTemplate: QA_TEMPLATE,
+				questionGeneratorTemplate: CONDENSE_TEMPLATE,
+				returnSourceDocuments: true, //The number of source documents returned is 4 by default
+			}
+		);
+
+		const pastMessages = history.map((message: string, i: number) => {
+			if (i % 2 === 0) {
+				return new HumanMessage(message);
+			} else {
+				return new AIMessage(message);
+			}
+		});
+
+		//Ask a question using chat history
+		const response = await chain.call({
+			question: sanitizedQuestion,
+			chat_history: pastMessages,
+		});
+
+		console.log("response", response);
+		return Response.json(response, { status: 200 });
+	} catch (error: any) {
+		console.log("error", error);
+		return Response.json(
+			{ error: error.message || "Something went wrong" },
+			{ status: 500 }
+		);
+	}
 }
